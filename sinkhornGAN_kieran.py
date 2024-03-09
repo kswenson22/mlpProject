@@ -22,13 +22,19 @@ import pandas as pd
 import os
 import multiprocessing
 
+# seed for reproducibility
+seed_value = 2024
+np.random.seed(seed_value)
+torch.manual_seed(seed_value)
+torch.mps.manual_seed(seed_value)
+
 # Setup checkpoint directory and metrics log file
-checkpoint_dir = '/Users/kieran/Documents/mlpProject/0308HorseZebra/checkpoints'
+checkpoint_dir = '/Users/kieran/Documents/mlpProject/0308HorseZebra/0309evening'
 metrics_log_file = os.path.join(checkpoint_dir, 'training_metrics.csv')
 os.makedirs(checkpoint_dir, exist_ok=True)
 
 # Define checkpointing frequency
-checkpoint_freq = 5
+checkpoint_freq = 1
 
 # Function to save checkpoints
 def save_checkpoint(state, filename='checkpoint.pth'):
@@ -160,36 +166,6 @@ class SinkhornLoss(nn.Module):
             return sinkhorn_div
         else:
             return sinkhorn_div, u, v
-        
-
-
-# Function to compute Fréchet Inception Distance (FID)
-def calculate_fid(real_images, generated_images, device='mps'):
-    real_images = real_images.detach().cpu().numpy()
-    generated_images = generated_images.detach().cpu().numpy()
-
-    # Preprocess images
-    real_images = np.transpose(real_images, (0, 2, 3, 1))  # Change from NCHW to NHWC
-    generated_images = np.transpose(generated_images, (0, 2, 3, 1))
-
-    # Load pre-trained Inception v3 model
-    inception_model = inception_v3(pretrained=True, transform_input=False).to(device)
-    inception_model.eval()
-
-    # Compute activations for real and generated images
-    with torch.no_grad():
-        real_activations = inception_model(torch.tensor(real_images).to(device)).detach().cpu().numpy()
-        generated_activations = inception_model(torch.tensor(generated_images).to(device)).detach().cpu().numpy()
-
-    # Compute mean and covariance of activations
-    mu_real = np.mean(real_activations, axis=0)
-    mu_generated = np.mean(generated_activations, axis=0)
-    cov_real = np.cov(real_activations, rowvar=False)
-    cov_generated = np.cov(generated_activations, rowvar=False)
-
-    # Compute FID
-    fid = np.sum((mu_real - mu_generated) ** 2) + np.trace(cov_real + cov_generated - 2 * sqrtm(np.dot(cov_real, cov_generated)))
-    return fid
 
 
 def main():
@@ -238,21 +214,27 @@ def main():
     for epoch in range(num_epochs):
         print(f"Epoch {epoch+1}/{num_epochs}")
 
+        # arrays for different losses
+        cycle_losses = []
+        sinkhorn_losses = []
+        losses_G_AB = []
+        losses_G_BA = []
+        losses_D_A = []
+        losses_D_B = []     
+
         # Reset total losses for each epoch
+        total_cycle_loss = 0.0
+        total_sinkhorn_loss = 0.0
         total_loss_G_AB = 0.0
         total_loss_G_BA = 0.0
         total_loss_D_A = 0.0
         total_loss_D_B = 0.0
 
-        # Initialize lists to store evaluation scores
-        ssim_scores = []
-        psnr_scores = []
-        fid_scores = []
-
         for i, data in enumerate(zip(dataloader_A, dataloader_B)):
             real_A, _ = data[0]
             real_B, _ = data[1]
-            if i % 100 == 0:
+            # print("Data loop: ", i)
+            if i % 200 == 0:
                 print("Data loop: ", i)
             # Move real_A and real_B to the same device as the model
             real_A = real_A.to(device)
@@ -292,6 +274,8 @@ def main():
             # Accumulate losses
             total_loss_G_AB += loss_G_AB.item()
             total_loss_G_BA += loss_G_BA.item()
+            total_cycle_loss += cycle_loss.item()
+            total_sinkhorn_loss += sinkhorn_loss_val.item()
 
             # Train the discriminators
             optimizer_D_A.zero_grad()
@@ -322,47 +306,6 @@ def main():
             total_loss_D_A += loss_D_A.item()
             total_loss_D_B += loss_D_B.item()
 
-            # interval = 100  # Adjust the value as needed
-            #         # Generate translated images for evaluation
-            # if i % interval == 0:  # Adjust interval as needed
-            #     translated_images = []
-            #     for real_images, _ in dataloader_B:  # Use dataloader_B for generating translated images
-            #     # Forward pass through generator
-            #         fake_A = G_BA(real_images.to(device))
-            #         translated_images.append(fake_A)
-
-                    # Save or visualize generated images
-                    # For example, you can save images to a directory
-                    #save_image(torch.cat(translated_images), f'generated_images_epoch_{epoch}_batch_{i}.png', normalize=True)
-
-            # Generate translated images for evaluation
-        with torch.no_grad():
-            translated_images = G_AB(real_A)
-
-        
-         # Calculate evaluation metrics
-        ssim_scores_batch = []
-        psnr_scores_batch = []
-        fid_scores_batch = []
-        for real_images, generated_images in zip(dataloader_A, generated_images):
-            real_images = real_images.cpu().numpy().transpose(0, 2, 3, 1)  # Change from NCHW to NHWC
-            generated_images = generated_images.cpu().numpy().transpose(0, 2, 3, 1)
-            ssim_scores_batch.append(ssim(real_images, generated_images, multichannel=True))
-            psnr_scores_batch.append(psnr(real_images, generated_images))
-            print("PSNR scores: ", psnr_scores_batch)
-            fid_scores_batch.append(calculate_fid(real_images, generated_images))
-            print("FID scores: ", fid_scores_batch)
-
-        # Average evaluation metrics over batch
-        avg_ssim = np.mean(ssim_scores_batch)
-        avg_psnr = np.mean(psnr_scores_batch)
-        avg_fid = np.mean(fid_scores_batch)
-
-        # Store evaluation metrics for further analysis or visualization
-        ssim_scores.append(avg_ssim)
-        psnr_scores.append(avg_psnr)
-        fid_scores.append(avg_fid)
-
         # Calculate average losses for the epoch
         avg_loss_G_AB = total_loss_G_AB / len(dataloader_A)
         avg_loss_G_BA = total_loss_G_BA / len(dataloader_B)
@@ -374,58 +317,53 @@ def main():
         losses_G_BA.append(avg_loss_G_BA)
         losses_D_A.append(avg_loss_D_A)
         losses_D_B.append(avg_loss_D_B)
+        avg_cycle_loss = total_cycle_loss / len(dataloader_A)
+        avg_sinkhorn_loss = total_sinkhorn_loss / len(dataloader_A)
 
         # Print or log the average losses for the epoch
         print(f"Epoch [{epoch+1}/{num_epochs}], "
             f"Generator AB Loss: {avg_loss_G_AB:.4f}, "
             f"Generator BA Loss: {avg_loss_G_BA:.4f}, "
             f"Discriminator A Loss: {avg_loss_D_A:.4f}, "
-            f"Discriminator B Loss: {avg_loss_D_B:.4f}")
-    print(f"SSIM Score: {np.mean(ssim_scores):.4f}, "
-          f"PSNR Score: {np.mean(psnr_scores):.4f}, "
-          f"FID Score: {np.mean(fid_scores):.4f}")
-    
+            f"Discriminator B Loss: {avg_loss_D_B:.4f},"
+            f"Sinkhorn Loss: {avg_loss_D_A:.4f}, "
+            f"Cycle Loss: {avg_loss_D_B:.4f}")
+
         # Example metrics dictionary
-    epoch_metrics = {
-        'epoch': epoch + 1,
-        'loss_G_AB': total_loss_G_AB / len(dataloader_A),
-        'loss_G_BA': total_loss_G_BA / len(dataloader_B),
-        'loss_D_A': total_loss_D_A / len(dataloader_A),
-        'loss_D_B': total_loss_D_B / len(dataloader_B),
-        'SSIM': np.mean(ssim_scores),
-        'PSNR': np.mean(psnr_scores),
-        'FID': np.mean(fid_scores)
-    }
-    update_metrics_log(epoch_metrics, metrics_log_file)
+        epoch_metrics = {
+            'epoch': epoch + 1,
+            'loss_G_AB': total_loss_G_AB / len(dataloader_A),
+            'loss_G_BA': total_loss_G_BA / len(dataloader_B),
+            'loss_D_A': total_loss_D_A / len(dataloader_A),
+            'loss_D_B': total_loss_D_B / len(dataloader_B),
+            'Sinkhorn Loss': total_sinkhorn_loss / len(dataloader_A),
+            'Cycle Loss': total_cycle_loss / len(dataloader_B)
+        }
+        update_metrics_log(epoch_metrics, metrics_log_file)
 
-    # Save checkpoint
-    if (epoch + 1) % checkpoint_freq == 0 or epoch == num_epochs - 1:
-        checkpoint_path = os.path.join(checkpoint_dir, f'checkpoint_epoch_{epoch+1}.pth')
-        save_checkpoint({
-            'epoch': epoch,
-            'G_AB_state_dict': G_AB.state_dict(),
-            'G_BA_state_dict': G_BA.state_dict(),
-            'D_A_state_dict': D_A.state_dict(),
-            'D_B_state_dict': D_B.state_dict(),
-            'optimizer_G_state_dict': optimizer_G.state_dict(),
-            'optimizer_D_A_state_dict': optimizer_D_A.state_dict(),
-            'optimizer_D_B_state_dict': optimizer_D_B.state_dict(),
-            'metrics': epoch_metrics  # Save metrics along with model
-        }, checkpoint_path)
-        # Update latest checkpoint
-        save_checkpoint({
-            'epoch': epoch,
-            'G_AB_state_dict': G_AB.state_dict(),
-            'G_BA_state_dict': G_BA.state_dict(),
-            'D_A_state_dict': D_A.state_dict(),
-            'D_B_state_dict': D_B.state_dict(),
-            'optimizer_G_state_dict': optimizer_G.state_dict(),
-            'optimizer_D_A_state_dict': optimizer_D_A.state_dict(),
-            'optimizer_D_B_state_dict': optimizer_D_B.state_dict(),
-            'metrics': epoch_metrics  # Save metrics along with model
-        }, latest_checkpoint_path)
-        print(f"Saved checkpoint at {checkpoint_path}")
-
+        # Save checkpoint
+        if (epoch + 1) % checkpoint_freq == 0 or epoch == num_epochs - 1:
+            checkpoint_path = os.path.join(checkpoint_dir, f'epoch_{epoch+1}.pth')
+            save_checkpoint({
+                'epoch': epoch,
+                'G_AB_state_dict': G_AB.state_dict(),
+                'G_BA_state_dict': G_BA.state_dict(),
+                'D_A_state_dict': D_A.state_dict(),
+                'D_B_state_dict': D_B.state_dict(),
+                'optimizer_G_state_dict': optimizer_G.state_dict(),
+                'optimizer_D_A_state_dict': optimizer_D_A.state_dict(),
+                'optimizer_D_B_state_dict': optimizer_D_B.state_dict(),
+                'learning_rate_G': optimizer_G.param_groups[0]['lr'],
+                'learning_rate_D_A': optimizer_D_A.param_groups[0]['lr'],
+                'learning_rate_D_B': optimizer_D_B.param_groups[0]['lr'],
+                'rng_state_pytorch': torch.get_rng_state(),
+                'metrics': epoch_metrics  # Save metrics along with model
+            }, checkpoint_path)
+            print(f"Saved checkpoint to {checkpoint_path}")
+        
+        # # Empty CUDA cache at the end of epoch to release GPU memory
+        # print("Empty CUDA cache: ", epoch+1)
+        # torch.mps.empty_cache()
 
     # Plot loss curves
     plt.plot(losses_G_AB, label='Generator AB Loss')
@@ -437,10 +375,6 @@ def main():
     plt.title('Loss Curves')
     plt.legend()
     plt.show()
-
-     # Empty CUDA cache at the end of epoch to release GPU memory
-    print("Empty CUDA cache: ", i)
-    torch.mps.empty_cache()
 
 
 if __name__ == '__main__':
