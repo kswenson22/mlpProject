@@ -1,7 +1,7 @@
 Code for MLP Project 2023/24 at the University of Edinburgh
 
 The project involves adjusting the loss function of a CycleGAN model to include an optimal transport loss term, the sinkhorn loss.
-The CycleGAN is then trained on the classic style translation task of Horses to Zebras.
+The CycleGAN is then trained on style translation tasks such as translating images of horses into images of zebras, images of pumas to tigers, and digital photos to Monet paintings.
 
 Code was run on Python 3.11 on Macbook Air M2, 8-core GPU.
 
@@ -18,6 +18,7 @@ source env/bin/activate
 The relevant packages can then be installed as follows:
 pip install pytorch torch torchvision matplotlib scikit-image pillow pandas numpy
 
+Instructions for running the sinkhornGAN.py script with the zebraHorse dataset:
 To run on your device, download the zebraHorse dataset, unzip it, and place it in your working directory. Go inside the trainA
 and trainB folders, create a new folder inside of each of them (horses for trainA and zebras for trainB) and move all of the images
 inside of that folder. Then change lines 195-196 to reflect the location of these folders. To save metrics correctly, go up and change
