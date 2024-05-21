@@ -10,6 +10,7 @@ import torch
 import torchvision.transforms as transforms
 from skimage.metrics import structural_similarity as ssim
 from skimage.metrics import peak_signal_noise_ratio as psnr
+from torch_fidelity import calculate_metrics
 from torchvision.datasets import ImageFolder
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
@@ -25,6 +26,11 @@ import joblib
 from joblib import load
 import torchvision.models as models
 from geomloss import SamplesLoss
+from torchvision.utils import save_image
+import os
+import numpy as np
+from skimage.metrics import structural_similarity as ssim
+from skimage.metrics import peak_signal_noise_ratio as psnr
 
 # seed for reproducibility
 seed_value = 2024
@@ -34,12 +40,12 @@ torch.mps.manual_seed(seed_value)
 device = torch.device('mps')
 
 # Setup checkpoint directory and metrics log file
-checkpoint_dir = '/Users/kieran/Documents/mlpProject/0314_unet'
+checkpoint_dir = '/Users/kieran/Documents/mlpProject/monet2photo'
 metrics_log_file = os.path.join(checkpoint_dir, 'training_metrics.csv')
 os.makedirs(checkpoint_dir, exist_ok=True)
 
 # Define checkpointing frequency
-checkpoint_freq = 5
+checkpoint_freq = 10
 
 # Function to save checkpoints
 def save_checkpoint(state, filename='checkpoint.pth'):
@@ -52,40 +58,6 @@ def update_metrics_log(metrics, filename):
         df.to_csv(filename, mode='a', index=False)
     else:
         df.to_csv(filename, mode='a', index=False, header=False)
-        
-# # Load the PCA models
-# pca_horse = joblib.load('horse_pca_128.joblib')
-# pca_zebra = joblib.load('zebra_pca_128.joblib')
-# print(type(pca_horse))
-
-# # load the scaler
-# scaler = joblib.load('features_scaler_128.joblib')
-
-# # load reduced features
-# horse_reduced_features = joblib.load('reduced_features_horse_128.joblib')
-# zebra_reduced_features = joblib.load('reduced_features_zebra_128.joblib')
-# horse_reduced_features = torch.tensor(horse_reduced_features).float().to(device)
-# zebra_reduced_features = torch.tensor(zebra_reduced_features).float().to(device)
-# print("Horse reduced features: ", horse_reduced_features.shape)
-
-# # Initialize feature extractor (ResNet18 without the final fully connected layer)
-# resnet18 = models.resnet18(pretrained=True)
-# resnet18.to(device)
-# feature_extractor = torch.nn.Sequential(*list(resnet18.children())[:-2])
-# feature_extractor.eval()
-
-# def prepare_image_features(image, feature_extractor, pca_model, device):
-#     # Assume image is a PyTorch tensor of shape [3, H, W] and normalized
-#     image = image.unsqueeze(0).to(device)  # Add batch dimension
-#     with torch.no_grad():
-#         features = feature_extractor(image)
-#         features = features.view(features.size(0), -1).cpu().numpy()  # Flatten features
-#         standardized_features = scaler.transform(features)  # Standardize the features
-#     reduced_features = pca_model.transform(standardized_features)  # Apply PCA
-#     return reduced_features
-
-# start_epoch = 0
-# metrics = []
 
 class Generator(nn.Module):
     def __init__(self, input_nc, output_nc):
@@ -116,58 +88,6 @@ class Generator(nn.Module):
     def forward(self, x):
         return self.model(x)
 
-# Define the generator architecture (U-Net)
-class UNetGenerator(nn.Module):
-    def __init__(self, input_channels, output_channels):
-        super(UNetGenerator, self).__init__()
-        
-        # Encoder
-        self.encoder = nn.Sequential(
-            nn.Conv2d(input_channels, 64, kernel_size=4, stride=2, padding=1),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(128),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(128, 256, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(256),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(256, 512, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(512),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(512, 512, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(512),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(512, 512, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(512),
-            nn.LeakyReLU(0.2, inplace=True)
-        )
-        
-        # Decoder
-        self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(512, 512, kernel_size=4, stride=2, padding=1),  # Input channels: 512 from encoder
-            nn.BatchNorm2d(512),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(512, 512, kernel_size=4, stride=2, padding=1),  # Input channels: 512
-            nn.BatchNorm2d(512),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(512, 256, kernel_size=4, stride=2, padding=1),  # Input channels: 512, output channels: 256
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1),  # Input channels: 256, output channels: 128
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),   # Input channels: 128, output channels: 64
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(64, output_channels, kernel_size=4, stride=2, padding=1),  # Input channels: 64, output channels: output_channels
-            nn.Tanh()
-        )
-
-
-    def forward(self, x):
-        encoded_features = self.encoder(x)
-        return self.decoder(encoded_features)
-    
 class Discriminator(nn.Module):
     def __init__(self, input_nc):
         super(Discriminator, self).__init__()
@@ -193,69 +113,13 @@ class ResidualBlock(nn.Module):
         self.conv_block = nn.Sequential(
             nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1),
             nn.InstanceNorm2d(channels),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
             nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1),
             nn.InstanceNorm2d(channels)
         )
 
     def forward(self, x):
         return x + self.conv_block(x)
-    
-# class SinkhornLoss(torch.nn.Module):
-#     def __init__(self, epsilon=10, max_iters=100, reduction='mean'):
-#         """
-#         Initializes the Sinkhorn Loss module.
-        
-#         Parameters:
-#         - epsilon: The entropic regularization parameter.
-#         - max_iters: Maximum number of iterations for the Sinkhorn algorithm.
-#         - reduction: Specifies the reduction to apply to the output: 'none' | 'mean' | 'sum'.
-#         """
-#         super(SinkhornLoss, self).__init__()
-#         self.epsilon = epsilon
-#         self.max_iters = max_iters
-#         self.reduction = reduction
-    
-#     def forward(self, x, y):
-#         """
-#         Computes the Sinkhorn Loss between two distributions.
-        
-#         Parameters:
-#         - x: Source distribution tensor of shape (batch_size, num_features).
-#         - y: Target distribution tensor of shape (batch_size, num_features).
-#         """
-#         # Convert tensors to numpy arrays
-#         x_np = x.detach().cpu().numpy()
-#         y_np = y.detach().cpu().numpy()
-        
-#         # Compute the pairwise cost between all pairs
-#         C = np.sqrt(np.sum((x_np[:, np.newaxis, :] - y_np[np.newaxis, :, :]) ** 2, axis=2))
-        
-#         # Compute Sinkhorn regularization
-#         K = np.exp(-C / self.epsilon)
-        
-#         # Initialize marginal weights
-#         a = np.ones(x_np.shape[0]) / x_np.shape[0]
-#         b = np.ones(y_np.shape[0]) / y_np.shape[0]
-        
-#         # Apply Sinkhorn iterations
-#         K_eps = K * self.epsilon
-#         for _ in range(self.max_iters):
-#             b = 1.0 / (K_eps.T @ a)
-#             a = 1.0 / (K_eps @ b)
-        
-#         # Compute the Sinkhorn distance
-#         sinkhorn_distance = np.sum(a[:, np.newaxis] * K * b[np.newaxis, :] * C)
-        
-#         # Convert Sinkhorn distance to torch tensor
-#         sinkhorn_distance = torch.tensor(sinkhorn_distance, dtype=torch.float32, device=x.device)
-        
-#         if self.reduction == 'mean':
-#             sinkhorn_distance = sinkhorn_distance.mean()
-#         elif self.reduction == 'sum':
-#             sinkhorn_distance = sinkhorn_distance.sum()
-        
-#         return sinkhorn_distance
 
 def main():
     print("Main function")
@@ -263,16 +127,11 @@ def main():
     input_nc = 3  # Number of input channels
     output_nc = 3  # Number of output channels
     # Initialize networks
-    G_AB = UNetGenerator(input_nc, output_nc).to(device)
-    G_BA = UNetGenerator(output_nc, input_nc).to(device)
+    G_AB = Generator(input_nc, output_nc).to(device)
+    G_BA = Generator(output_nc, input_nc).to(device)
     D_A = Discriminator(input_nc).to(device)
     D_B = Discriminator(output_nc).to(device)
     print("Initialized networks")
-
-    # # Initialize Sinkhorn loss
-    # sinkhorn_loss = SinkhornLoss()
-    sinkhorn_loss = SamplesLoss(loss="sinkhorn", p=2, blur=0.05, scaling=0.9)
-
 
     # Define optimizer
     print("Optimizer definition")
@@ -282,75 +141,58 @@ def main():
 
     # Define data loaders
     print("Data loaders")
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                 std=[0.229, 0.224, 0.225])
-    transform = transforms.Compose([transforms.Resize((256, 256)), transforms.ToTensor(), normalize])
-    dataset_A = ImageFolder(root="/Users/kieran/Documents/mlpProject/zebraHorse/trainA", transform=transform)
-    dataset_B = ImageFolder(root="/Users/kieran/Documents/mlpProject/zebraHorse/trainB", transform=transform)
-    dataloader_A = DataLoader(dataset_A, batch_size=16, shuffle=True, num_workers=6, drop_last=True)
-    dataloader_B = DataLoader(dataset_B, batch_size=16, shuffle=True, num_workers=6, drop_last=True)
+    transform = transforms.Compose([transforms.Resize((128, 128)), transforms.ToTensor()])
+    dataset_A = ImageFolder(root="/Users/kieran/Documents/mlpProject/monet/photo_jpg", transform=transform)
+    dataset_B = ImageFolder(root="/Users/kieran/Documents/mlpProject/monet/monet_jpg", transform=transform)
+    # test_A = ImageFolder(root="/Users/kieran/Documents/mlpProject/zebraHorse/testHorses", transform=transform)
+    # test_B = ImageFolder(root="/Users/kieran/Documents/mlpProject/zebraHorse/testZebras", transform=transform)
+    dataloader_A = DataLoader(dataset_A, batch_size=8, shuffle=True, num_workers=6, drop_last=True)
+    dataloader_B = DataLoader(dataset_B, batch_size=8, shuffle=True, num_workers=6, drop_last=True)
+
+    # # dataloaders for image saving
+    # dataloader_A_test = DataLoader(dataset_A, batch_size=5, shuffle=False, num_workers=5)
+    # dataloader_B_test = DataLoader(dataset_B, batch_size=5, shuffle=False, num_workers=5)
 
     num_epochs = 100
     lambda_identity = 5.0
     lambda_cycle = 10.0
+    lambda_sinkhorn = 0
 
     adversarial_loss = nn.BCELoss()
 
-    losses_G_AB = []
-    losses_G_BA = []
-    losses_D_A = []
-    losses_D_B = []
-
-
     # Training loop
     for epoch in range(num_epochs):
-        print(f"Epoch {epoch+1}/{num_epochs}")
-
-        # arrays for different losses
-        # cycle_losses = []
-        # sinkhorn_losses = []
-        losses_G_AB = []
-        losses_G_BA = []
-        losses_D_A = []
-        losses_D_B = []     
+        print(f"Epoch {epoch+1}/{num_epochs}")  
 
         # Reset total losses for each epoch
         total_cycle_loss = 0.0
-        # total_sinkhorn_loss = 0.0
+        total_sinkhorn_loss = 0.0
         total_identity_loss = 0.0
         total_loss_G_AB = 0.0
         total_loss_G_BA = 0.0
         total_loss_D_A = 0.0
         total_loss_D_B = 0.0
+        total_sinkhorn_loss = 0.0
+        total_loss_G = 0.0
 
         for i, data in enumerate(zip(dataloader_A, dataloader_B)):
             real_A, _ = data[0]
             real_B, _ = data[1]
-            if i % 10 == 0:
-                print("Data loop images processed: ", i*16)
+            if i % 100 == 0:
+                print("Data loop: ", i)
             # Move real_A and real_B to the same device as the model
             real_A = real_A.to(device)
             real_B = real_B.to(device)
-
-
             # Train the generators
             optimizer_G.zero_grad()
+
             fake_B = G_AB(real_A)  # Generate fake image B from real image A
             rec_A = G_BA(fake_B)  # Reconstruct image A from fake image B
             fake_A = G_BA(real_B)  # Generate fake image A from real image B
             rec_B = G_AB(fake_A)  # Reconstruct image B from fake image A
+
             rec_A = rec_A.to(device)
             rec_B = rec_B.to(device)
-
-            # Inside the training loop, after generating fake images
-            real_A_flat = real_A.view(real_A.size(0), -1)  # Flatten images
-            real_B_flat = real_B.view(real_B.size(0), -1)  # Flatten images
-            fake_A_flat = fake_A.view(fake_A.size(0), -1)  # Flatten images
-            fake_B_flat = fake_B.view(fake_B.size(0), -1)  # Flatten images
-
-            # Compute Sinkhorn loss between real A and fake B distributions
-            sinkhorn_loss_AB = sinkhorn_loss(real_A_flat, fake_B_flat).to(device)
-            sinkhorn_loss_BA = sinkhorn_loss(real_B_flat, fake_A_flat).to(device)
 
             # Identity loss
             identity_loss = (torch.mean(torch.abs(real_A - fake_A)) + torch.mean(torch.abs(real_B - fake_B))) * lambda_identity
@@ -365,20 +207,18 @@ def main():
             # Cycle consistency loss
             cycle_loss = (torch.mean(torch.abs(real_A - rec_A)) + torch.mean(torch.abs(real_B - rec_B))) * lambda_cycle
 
-            # # Sinkhorn loss
-            # sinkhorn_loss = SinkhornLoss().to(device)
+            # Sinkhorn loss
+            sinkhorn_loss = SamplesLoss(loss="sinkhorn", p=2, blur=0.05, scaling=0.9)
 
-            # horse_image_features = prepare_image_features(real_A.squeeze(0), feature_extractor, pca_horse, device)
-            # zebra_image_features = prepare_image_features(real_B.squeeze(0), feature_extractor, pca_zebra, device)
+            fake_A_reshaped = fake_A.view(fake_A.shape[0], -1).to(device)
+            fake_B_reshaped = fake_B.view(fake_B.shape[0], -1).to(device)
+            real_A_reshaped = real_A.view(real_A.shape[0], -1).to(device)
+            real_B_reshaped = real_B.view(real_B.shape[0], -1).to(device)
 
-            # horse_features_tensor = torch.tensor(horse_image_features).float().to(device)
-            # zebra_features_tensor = torch.tensor(zebra_image_features).float().to(device)
-
-            # horse_divergence = sinkhorn_loss(horse_features_tensor, horse_reduced_features)
-            # zebra_divergence = sinkhorn_loss(zebra_features_tensor, zebra_reduced_features)
+            sinkhorn_divergence = (sinkhorn_loss(fake_A_reshaped, real_A_reshaped) + sinkhorn_loss(fake_B_reshaped, real_B_reshaped))*lambda_sinkhorn
 
             # Total generator loss
-            loss_G = loss_G_AB + loss_G_BA + cycle_loss + identity_loss + sinkhorn_loss_AB + sinkhorn_loss_BA
+            loss_G = loss_G_AB + loss_G_BA + cycle_loss + identity_loss + sinkhorn_divergence
             loss_G.backward()
             optimizer_G.step()
 
@@ -386,9 +226,9 @@ def main():
             total_loss_G_AB += loss_G_AB.item()
             total_loss_G_BA += loss_G_BA.item()
             total_cycle_loss += cycle_loss.item()
-            # total_sinkhorn_loss += horse_divergence + zebra_divergence
             total_identity_loss += identity_loss.item()
-
+            total_sinkhorn_loss += sinkhorn_divergence.item()
+            total_loss_G += loss_G.item()
 
             # Train the discriminators
             optimizer_D_A.zero_grad()
@@ -423,18 +263,9 @@ def main():
         avg_loss_G_AB = total_loss_G_AB / len(dataloader_A)
         avg_loss_G_BA = total_loss_G_BA / len(dataloader_B)
         avg_loss_D_A = total_loss_D_A / len(dataloader_A)
-        avg_loss_D_B = total_loss_D_B / len(dataloader_B)
+        avg_loss_D_B = total_loss_D_B / len(dataloader_A)
         avg_cycle_loss = total_cycle_loss / len(dataloader_A)
-        # avg_sinkhorn_loss = total_sinkhorn_loss / len(dataloader_A)
-        avg_identity_loss = total_identity_loss / len(dataloader_A)
-
-        # Append average losses to lists
-        losses_G_AB.append(avg_loss_G_AB)
-        losses_G_BA.append(avg_loss_G_BA)
-        losses_D_A.append(avg_loss_D_A)
-        losses_D_B.append(avg_loss_D_B)
-        avg_cycle_loss = total_cycle_loss / len(dataloader_A)
-        # avg_sinkhorn_loss = total_sinkhorn_loss / len(dataloader_A)
+        avg_sinkhorn_loss = total_sinkhorn_loss / len(dataloader_A)
         avg_identity_loss = total_identity_loss / len(dataloader_A)
 
         # Print or log the average losses for the epoch
@@ -443,25 +274,25 @@ def main():
             f"Generator BA Loss: {avg_loss_G_BA:.4f}, "
             f"Discriminator A Loss: {avg_loss_D_A:.4f}, "
             f"Discriminator B Loss: {avg_loss_D_B:.4f},"
-            # f"Sinkhorn Loss: {avg_sinkhorn_loss:.4f}, "
             f"Cycle Loss: {avg_cycle_loss:.4f}, "
-            f"Identity Loss: {avg_identity_loss:.4f}")
-
-        # Example metrics dictionary
+            f"Identity Loss: {avg_identity_loss:.4f}"
+            f"Sinkhorn Loss: {avg_sinkhorn_loss:.4f}, ")
+        
+        # metrics dictionary
         epoch_metrics = {
             'epoch': epoch + 1,
             'loss_G_AB': total_loss_G_AB / len(dataloader_A),
-            'loss_G_BA': total_loss_G_BA / len(dataloader_B),
+            'loss_G_BA': total_loss_G_BA / len(dataloader_A),
             'loss_D_A': total_loss_D_A / len(dataloader_A),
-            'loss_D_B': total_loss_D_B / len(dataloader_B),
-            # 'Sinkhorn Loss': total_sinkhorn_loss / len(dataloader_A),
-            'Cycle Loss': total_cycle_loss / len(dataloader_B),
+            'loss_D_B': total_loss_D_B / len(dataloader_A),
+            'Sinkhorn Loss': total_sinkhorn_loss / len(dataloader_A),
+            'Cycle Loss': total_cycle_loss / len(dataloader_A),
             'Identity Loss': total_identity_loss / len(dataloader_A)
         }
         update_metrics_log(epoch_metrics, metrics_log_file)
 
         # Save checkpoint
-        if (epoch + 1) % checkpoint_freq == 0 or epoch == num_epochs - 1:
+        if (epoch + 1) % checkpoint_freq == 0 or epoch in [0,1,2,3,4,5] or epoch == num_epochs - 1:
             checkpoint_path = os.path.join(checkpoint_dir, f'epoch_{epoch+1}.pth')
             save_checkpoint({
                 'epoch': epoch,
@@ -479,137 +310,10 @@ def main():
                 'metrics': epoch_metrics  # Save metrics along with model
             }, checkpoint_path)
             print(f"Saved checkpoint to {checkpoint_path}")
-        
-        # # Empty CUDA cache at the end of epoch to release GPU memory
-        # print("Empty CUDA cache: ", epoch+1)
-        # torch.mps.empty_cache()
-
-    # Plot loss curves
-    plt.plot(losses_G_AB, label='Generator AB Loss')
-    plt.plot(losses_G_BA, label='Generator BA Loss')
-    plt.plot(losses_D_A, label='Discriminator A Loss')
-    plt.plot(losses_D_B, label='Discriminator B Loss')
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.title('Loss Curves')
-    plt.legend()
-    plt.show()
-
 
 if __name__ == '__main__':
     multiprocessing.freeze_support()  # Ensure multiprocessing works in frozen executables
     device = torch.device('mps')
     main().to(device)
     print(device)
-    
-    
-# # Prepare to resume training if a checkpoint exists
-# latest_checkpoint_path = os.path.join(checkpoint_dir, 'latest_checkpoint.pth')
-# if os.path.exists(latest_checkpoint_path):
-#     checkpoint = torch.load(latest_checkpoint_path)
-#     start_epoch = checkpoint['epoch'] + 1
-#     G_AB.load_state_dict(checkpoint['G_AB_state_dict'])
-#     G_BA.load_state_dict(checkpoint['G_BA_state_dict'])
-#     D_A.load_state_dict(checkpoint['D_A_state_dict'])
-#     D_B.load_state_dict(checkpoint['D_B_state_dict'])
-#     optimizer_G.load_state_dict(checkpoint['optimizer_G_state_dict'])
-#     optimizer_D_A.load_state_dict(checkpoint['optimizer_D_A_state_dict'])
-#     optimizer_D_B.load_state_dict(checkpoint['optimizer_D_B_state_dict'])
-#     # Assuming metrics were also saved
-#     metrics = checkpoint['metrics']
-#     print(f"Resuming training from epoch {start_epoch}")
-# else:
-#     start_epoch = 0
-#     metrics = []
-    
 
-
-# # Define the Sinkhorn divergence loss
-# class SinkhornLoss(nn.Module):
-#     def __init__(self, epsilon=1e-2, max_iters=20, reduction='mean'):
-#         super(SinkhornLoss, self).__init__()
-#         self.epsilon = epsilon
-#         self.max_iters = max_iters
-#         self.reduction = reduction
-
-#     def forward(self, x, y):
-#         print("Sinkhorn forward function")
-#         n = x.shape[0]
-#         m = y.shape[0]
-
-#         Wxy = torch.cdist(x.view(n, -1), y.view(m, -1), p=2)
-#         Wxy = Wxy / Wxy.max()
-
-#         u = torch.ones(n, 1).to(x.device) / n
-#         v = torch.ones(m, 1).to(y.device) / m
-
-#         for _ in range(self.max_iters):
-#             u0 = u
-#             u = 1.0 / (torch.matmul(torch.exp(-self.epsilon * Wxy / x.size(1)), v))
-#             v = 1.0 / (torch.matmul(torch.exp(-self.epsilon * Wxy.t() / y.size(1)), u))
-#             if torch.norm(u - u0, p=1) < self.epsilon:
-#                 break
-
-#         K = torch.exp(-self.epsilon * Wxy / x.size(1))
-#         sinkhorn_div = torch.sum(u * torch.matmul(K, v))
-
-#         if self.reduction == 'mean':
-#             sinkhorn_div = sinkhorn_div / n
-#         elif self.reduction == 'sum':
-#             pass
-#         else:
-#             sinkhorn_div = sinkhorn_div / n
-
-#         return sinkhorn_div
-    
-"""
-class SinkhornLoss(torch.nn.Module):
-    def __init__(self, epsilon=1, max_iters=100, reduction='mean'):
-        
-        Initializes the Sinkhorn Loss module.
-        
-        Parameters:
-        - epsilon: The entropic regularization parameter.
-        - max_iters: Maximum number of iterations for the Sinkhorn algorithm.
-        - reduction: Specifies the reduction to apply to the output: 'none' | 'mean' | 'sum'.
-        
-        super(SinkhornLoss, self).__init__()
-        self.epsilon = epsilon
-        self.max_iters = max_iters
-        self.reduction = reduction
-    
-    def forward(self, x, y):
-        
-        Computes the Sinkhorn Loss between two distributions.
-        
-        Parameters:
-        - x: Source distribution tensor of shape (batch_size, num_features).
-        - y: Target distribution tensor of shape (batch_size, num_features).
-    
-        # Compute the pairwise cost between all pairs
-        C = torch.cdist(x, y, p=2)  # Euclidean distance
-        print(C)
-        
-        # Apply entropic regularization
-        K = torch.exp(-C / self.epsilon)
-        print(K)
-        
-        # Initialize the Sinkhorn iterations
-        b = torch.ones(y.size(0), device=x.device) / y.size(0)
-        u = torch.ones(x.size(0), device=x.device) / x.size(0)
-        
-        for _ in range(self.max_iters):
-            u = 1.0 / (K @ b)
-            b = 1.0 / (K.t() @ u)
-        
-        # Compute the Sinkhorn distance
-        sinkhorn_distance = torch.sum(u * (K @ b) * C)
-        
-        if self.reduction == 'mean':
-            sinkhorn_distance = sinkhorn_distance.mean()
-        elif self.reduction == 'sum':
-            sinkhorn_distance = sinkhorn_distance.sum()
-        
-        return sinkhorn_distance
-
-    """
